@@ -1,13 +1,12 @@
 # **RustLeak**
 
-**RustLeak** is a lightweight and stealthy DNS-based data exfiltration and infiltration toolkit, built with Rust for high performance and reliability. It consists of two main components:
+**RustLeak** is a lightweight and stealthy DNS-based data exfiltration and infiltration toolkit, built with Rust. It can be used in a restricted environment. It consists of two main components:
 - **\`rustleak-server\`**: The custom DNS server that processes data through DNS queries.
 - **\`rustleak-client\`**: The client tool to send or receive data using the server.
 
-# WIP
-Actually, the programs only work and is parametred to work in a local environment.
-An update will be pushed to work in remote.
-
+** IMPORTANT ** 
+You need to setup and host the DNS Server.
+Then change your DNS Provider settings to redirect the DNS traffic to your server.
 ---
 
 ## **Features**
