@@ -5,28 +5,10 @@ use regex::Regex;
 
 pub fn get_resolver() -> TokioAsyncResolver {
     TokioAsyncResolver::tokio(
-        ResolverConfig::from_parts(
-            None,
-            vec![],
-            vec![NameServerConfig {
-                socket_addr: "127.0.0.1:1053".parse().unwrap(),
-                protocol: Protocol::Udp,
-                tls_dns_name: None,
-                trust_negative_responses: false,
-                bind_addr: None,
-            }, 
-            NameServerConfig {
-                socket_addr: "8.8.8.8:53".parse().unwrap(),
-                protocol: Protocol::Udp,
-                tls_dns_name: None,
-                trust_negative_responses: false,
-                bind_addr: None,
-            }],
-        ),
+        ResolverConfig::default(),
         ResolverOpts::default(),
     )
 }
-
 pub fn is_valid_fqdn(domain: &str) -> bool {
     const MAX_DOMAIN_LENGTH: usize = 255;
     const MAX_LABEL_LENGTH: usize = 63;
