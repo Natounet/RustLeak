@@ -1,0 +1,13 @@
+[package]
+name = "rustleak-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["derive"] }
+log = "0.4.24"
+simple_logger = "5.0.0"
+hickory-resolver = "0.24.1"
+rustleak-lib = { path = "../rustleak-lib" }
+tokio = { version = "1.43.0", features = ["full"] }
+tokio-macros = "2.4.0"

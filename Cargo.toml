@@ -1,0 +1,3 @@
+[workspace]
+members = ["rustleak-lib", "rustleak-client", "rustleak-server"]
+resolver = "2"
