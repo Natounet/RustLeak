@@ -4,6 +4,10 @@
 - **\`rustleak-server\`**: The custom DNS server that processes data through DNS queries.
 - **\`rustleak-client\`**: The client tool to send or receive data using the server.
 
+# WIP
+Actually, the programs only work and is parametred to work in a local environment.
+An update will be pushed to work in remote.
+
 ---
 
 ## **Features**
