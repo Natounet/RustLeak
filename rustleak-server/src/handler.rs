@@ -176,9 +176,8 @@ impl Handler {
         let mut header = Header::response_from_request(request.header());
         header.set_authoritative(true);
 
-        // Crée l'enregistrement TXT avec la chaîne construite
-        let rdata = RData::TXT(TXT::new(vec![String::from("OK")]));
-
+        // Crée l'enregistrement A avec la chaîne construite
+        let rdata = RData::A("82.165.140.49".parse().unwrap());
         // Crée la liste des enregistrements avec une TTL de 60 secondes
         let records = vec![Record::from_rdata(request.query().name().into(), 0, rdata)];
 
@@ -188,7 +187,10 @@ impl Handler {
         println!("INFO: Handling test request");
         println!(
             "Response fragments for all uids: {:?}",
-            self.data.lock().unwrap()
+            match self.data.lock() {
+                Ok(data) => data,
+                Err(poisoned) => poisoned.into_inner(),
+            }
         );
         // Envoie la réponse
         Ok(responder.send_response(response).await?)
@@ -201,20 +203,16 @@ impl Handler {
         request: &Request,
         mut responder: R,
     ) -> Result<ResponseInfo, Error> {
-        // Crée un constructeur de réponse à partir de la requête
+        // Construire la réponse à partir de la requête
         let builder = MessageResponseBuilder::from_message_request(request);
-
-        // Prépare l'en-tête de la réponse
+    
+        // Préparer l'en-tête de la réponse
         let mut header = Header::response_from_request(request.header());
         header.set_authoritative(true);
-
+    
         let mut message = String::from("OK");
-
-        // UPLOAD.[DATA_B32].[SEQ].[MAXSEQ].[UID].[DOMAIN]
-        println!(
-            "Data request received: {}",
-            request.query().name().to_string()
-        );
+    
+        // Découper la requête pour extraire les parties
         let parts: Vec<String> = request
             .query()
             .name()
@@ -222,104 +220,53 @@ impl Handler {
             .split('.')
             .map(|s| s.to_string())
             .collect();
-
-        let uid: String = match parts[4].parse::<String>() {
-            Ok(p) => {
-                p
-            }
-            Err(_) => {
-                eprintln!("Invalid uid received");
-                message = String::from("ERROR : Invalid uid");
-                String::from("0")
-            }
-        };
-
-        let _data = parts[1].clone();
-
-        let maxseq: u16 = match parts[3].parse() {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("Invalid max sequence number received");
-                message = String::from("ERROR : Invalid max sequence number");
-                0
-            }
-        };
-
-        let seq: u16 = match parts[2].parse() {
-            Ok(p) => {
-                if p >= maxseq {
-                    message = String::from(
-                        "ERROR : Sequence number need to be less than max sequence",
-                    );
+    
+        // Validation du format de la requête
+        if parts.len() < 5 {
+            message = String::from("ERROR : Invalid request format");
+        } else {
+            let uid = parts[4].clone();
+            let maxseq: usize = parts[3].parse().unwrap_or(0);
+            let seq: usize = parts[2].parse().unwrap_or(0);
+            let _data = parts[1].clone();
+    
+            // Gestion des fragments de données avec verrouillage
+            if let Ok(mut data) = self.data.lock() {
+                // Initialisation des fragments si nécessaire
+                if !data.contains_key(&uid) {
+                    data.insert(uid.clone(), vec![String::new(); maxseq]);
                 }
-                p
-            }
-            Err(_) => {
-                eprintln!("Invalid sequence number received");
-                message = String::from("ERROR : Invalid sequence number");
-                0
-            }
-        };
+    
+                if let Some(fragments) = data.get_mut(&uid) {
+                    if seq >= maxseq || !fragments[seq].is_empty() {
+                        message = String::from("ERROR : Invalid or duplicate sequence");
+                    } else {
+                        fragments[seq] = _data;
+    
 
-        if message == "OK" {
-            // Préparation de la structure de donnée dans le cas où ce n'est pas encore fait
-            if !self.data.lock().unwrap().contains_key(&uid)
-                || self
-                    .data
-                    .lock()
-                    .unwrap()
-                    .get(&uid)
-                    .unwrap()
-                    .is_empty()
-            {
-                // Instantialisation de seqmax vecteurs
-                let mut fragments = Vec::with_capacity(usize::from(maxseq));
-                fragments.resize(usize::from(maxseq ), String::new());
-                self.data
-                    .lock()
-                    .unwrap()
-                    .insert(uid.clone(), fragments);
-            }
-
-            // Ajout des données dans la bonne case
-            self.data
-                .lock()
-                .unwrap()
-                .get_mut(&uid)
-                .unwrap()[usize::from(seq)] = _data;
-
-            // Check if all usize vec are not empty
-            let mut request_complete = true;
-            for fragment in self.data.lock().unwrap().get(&uid).unwrap() {
-                if fragment.is_empty() {
-                    request_complete = false;
-                    break;
+                    }
+                } else {
+                    message = String::from("ERROR : UID not found");
                 }
-            }
-
-            if request_complete {
-                self.data.lock().unwrap().get_mut(&uid).unwrap().push("EOF".to_string());
+            } else {
+                eprintln!("Failed to acquire lock on data");
+                message = String::from("ERROR : Failed to acquire lock");
             }
         }
-
-        else {
-            println!("ERROR: {}", message);
-        }
-
+    
         // Crée l'enregistrement TXT avec la chaîne construite
         let rdata = RData::TXT(TXT::new(vec![message]));
-
+    
         // Crée la liste des enregistrements avec une TTL de 60 secondes
         let records = vec![Record::from_rdata(request.query().name().into(), 0, rdata)];
-
+    
         // Construit la réponse finale
         let response = builder.build(header, records.iter(), &[], &[], &[]);
-
+    
         // Envoie la réponse
         Ok(responder.send_response(response).await?)
     }
-
-    /// Handle requests for *.upload.{domain}.
+    
     async fn do_handle_request_download<R: ResponseHandler>(
         &self,
         request: &Request,
@@ -327,14 +274,14 @@ impl Handler {
     ) -> Result<ResponseInfo, Error> {
         // Crée un constructeur de réponse à partir de la requête
         let builder = MessageResponseBuilder::from_message_request(request);
-
+    
         // Prépare l'en-tête de la réponse
         let mut header = Header::response_from_request(request.header());
         header.set_authoritative(true);
-
+    
         let mut message = String::from("OK");
-
-        // DOWNLOAD.CODE.[DOMAIN]
+    
+        // Parse la requête pour extraire les parties
         println!(
             "Data request received: {}",
             request.query().name().to_string()
@@ -346,52 +293,71 @@ impl Handler {
             .split('.')
             .map(|s| s.to_string())
             .collect();
-
-        let uid: String = match parts[1].parse::<String>() {
-            Ok(p) => {
-                p
-            }
-            Err(_) => {
-                eprintln!("Invalid uid received");
-                message = String::from("ERROR : Invalid uid");
-                String::from("0")
-            }
-        };
-
-
-
-        if message == "OK" {
-            
-            let mut data = self.data.lock().unwrap();
-            if !data.contains_key(&uid) {
-                message = String::from("EOF");
+    
+        // Validation des parties et extraction des informations
+        if parts.len() < 3 {
+            message = String::from("ERROR : Invalid request format");
+        } else {
+            // Extraire le code et vérifier si un numéro de séquence est fourni
+            let code = parts[1].clone();
+            let domain = parts[2..].join(".");
+            let seq_result = if parts.len() > 3 {
+                parts[2].parse::<usize>().ok()
             } else {
-                let fragments = data.get_mut(&uid).unwrap();
-                if fragments.is_empty() {
-                    message = String::from("EOF");
-                } else {
-                    message = fragments.remove(0);
+                None
+            };
+    
+            match seq_result {
+                // Si un numéro de séquence est fourni, retourner le fragment correspondant
+                Some(seq) => {
+                    if let Ok(mut data) = self.data.lock() {
+                        if let Some(fragments) = data.get(&code) {
+                            if seq >= fragments.len() {
+                                message = String::from("ERROR : Sequence number out of bounds");
+                            } else {
+                                message = fragments[seq].clone();
+                                if message.is_empty() {
+                                    message = String::from("ERROR : Sequence fragment not available");
+                                }
+                            }
+                        } else {
+                            message = String::from("EOF");
+                        }
+                    } else {
+                        eprintln!("Failed to acquire lock on data");
+                        message = String::from("ERROR : Failed to acquire lock");
+                    }
+                }
+                // Si aucun numéro de séquence n'est fourni, retourner le nombre de fragments
+                None => {
+                    if let Ok(data) = self.data.lock() {
+                        if let Some(fragments) = data.get(&code) {
+                            message = format!("{}", fragments.len());
+                        } else {
+                            message = String::from("EOF");
+                        }
+                    } else {
+                        eprintln!("Failed to acquire lock on data");
+                        message = String::from("ERROR : Failed to acquire lock");
+                    }
                 }
             }
-            
         }
-
-        else {
-            println!("ERROR: {}", message);
-        }
-
+    
         // Crée l'enregistrement TXT avec la chaîne construite
         let rdata = RData::TXT(TXT::new(vec![message]));
-
+    
         // Crée la liste des enregistrements avec une TTL de 60 secondes
         let records = vec![Record::from_rdata(request.query().name().into(), 0, rdata)];
-
+    
         // Construit la réponse finale
         let response = builder.build(header, records.iter(), &[], &[], &[]);
-
+    
         // Envoie la réponse
         Ok(responder.send_response(response).await?)
     }
+
+
 
     /// Handle requests for *.upload.{domain}.
     async fn do_handle_request_close<R: ResponseHandler>(
