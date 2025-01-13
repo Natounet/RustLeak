@@ -48,8 +48,5 @@ pub fn decode_base32(labels: Vec<String>) -> Vec<Vec<u8>> {
 
 /// Décode une chaine
 pub fn decode_base32_fullcontent(labels: String) -> Option<Vec<u8>> {
-    match base32::decode(Alphabet::Rfc4648 { padding: false }, &labels.to_uppercase()) {
-        Some(bytes) => Some(bytes),
-        None => None,
-    }
+    base32::decode(Alphabet::Rfc4648 { padding: false }, &labels.to_uppercase())
 }

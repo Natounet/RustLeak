@@ -42,10 +42,8 @@ pub fn is_valid_fqdn(domain: &str) -> bool {
 
 pub fn verify_host(host: &str) -> bool {
     // Try to parse as IPv4
-    if host.split('.').count() == 4 {
-        if let Ok(_) = host.parse::<std::net::Ipv4Addr>() {
-            return true;
-        }
+    if host.split('.').count() == 4 && host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
     }
 
     // If not IPv4, check if valid FQDN
@@ -113,7 +111,7 @@ pub async fn send_request(
     resolver: &TokioAsyncResolver,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Check if query is valid FQDN
-    if !is_valid_fqdn(&query) {
+    if !is_valid_fqdn(query) {
         eprintln!("Invalid query: {}", query);
         return Err("Invalid query".into());
     }
