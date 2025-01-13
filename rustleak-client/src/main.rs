@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use hickory_resolver::proto::rr::record_data;
 use std::fs;
 use log::{error, info};
 use simple_logger::SimpleLogger;
@@ -60,26 +59,27 @@ async fn main() {
                     let labels = split_data_into_label_chunks(&raw_bytes);
                     let encoded_labels = encode_base32(labels);
                     let total_labels = encoded_labels.len();
-            
+                
                     let start_time = Instant::now();
                     for (i, label) in encoded_labels.iter().enumerate() {
                         let mut attempts = 0;
                         loop {
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
-            
+                
                             match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await {
                                 Ok(_) => break,
                                 Err(_) => {
                                     attempts += 1;
                                     if attempts >= MAX_ATTEMPTS {
                                         error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
-                                        break;
+                                        error!("Aborting...");
+                                        std::process::exit(1);
                                     }
                                 }
                             }
                         }
-            
+
                         let progress = (i + 1) as f32 / total_labels as f32 * 100.0;
                         let elapsed = start_time.elapsed().as_secs_f32();
                         let estimated_total = elapsed / ((i + 1) as f32 / total_labels as f32);
@@ -89,7 +89,10 @@ async fn main() {
                             progress, elapsed, remaining
                         );
                     }
+                    let elapsed = start_time.elapsed().as_secs_f32();
+                    let byte_rate = (raw_bytes.len() as f32) / elapsed;
                     info!("Data sent successfully!");
+                    info!("Average byte rate: {:.1} bytes/s", byte_rate);
                 }
                 Err(e) => {
                     error!("Error reading file: {}", e);
@@ -98,7 +101,7 @@ async fn main() {
             };
         }
         Commands::Receive { code, filename, domain } => {
-            match fs::OpenOptions::new().write(true).create(true).open(&filename) {
+            match fs::OpenOptions::new().write(true).create(true).truncate(false).open(&filename) {
                 Ok(_) => info!("File {} is writable", &filename),
                 Err(e) => {
                     error!("Error opening file for writing: {}", e);
@@ -128,7 +131,7 @@ async fn main() {
 
             let start_time = Instant::now();
             let mut received_data: Vec<Option<String>> = vec![None; total_fragments];
-            for seq in 0..total_fragments {
+            for (seq, data) in received_data.iter_mut().enumerate().take(total_fragments) {
                 let mut attempts = 0;
                 while attempts < MAX_ATTEMPTS {
                     let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
@@ -138,13 +141,19 @@ async fn main() {
                         Ok(lookup) => {
                             let records = lookup.iter().collect::<Vec<_>>();
                             let record_data = records[0].to_string();
-                            received_data[seq] = Some(record_data);
+                            *data = Some(record_data);
                             break;
                         }
                         Err(_) => {
                             attempts += 1;
                         }
                     }
+                }
+
+                if attempts >= MAX_ATTEMPTS {
+                    error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
+                    error!("Aborting...");
+                    std::process::exit(1);
                 }
 
                 let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
@@ -157,12 +166,15 @@ async fn main() {
                 );
             }
 
+            let elapsed = start_time.elapsed().as_secs_f32();
+            let byte_rate = (total_fragments as f32 * 32.0) / elapsed; // Assuming each fragment is 32 bytes
             let decoded_data = decode_base32(
-                received_data.into_iter().filter_map(|fragment| fragment).collect(),
+                received_data.into_iter().flatten().collect(),
             );
             let flattened_data: Vec<u8> = decoded_data.into_iter().flatten().collect();
             fs::write(&filename, flattened_data).expect("Failed to write data to file");
             info!("Data successfully written to file: {}", filename);
+            info!("Average byte rate: {:.1} bytes/s", byte_rate);
         }
     }
 }
