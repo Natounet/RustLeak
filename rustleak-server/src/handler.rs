@@ -185,7 +185,7 @@ impl Handler {
 
         let query_name = request.query().name().to_string();
         let parts: Vec<&str> = query_name.split('.').collect();
-        let mut message = String::from("OK");
+        let mut message = String::from("");
 
         if parts.len() < 3 {
             error!("Invalid download request format: {}", request.query().name());
