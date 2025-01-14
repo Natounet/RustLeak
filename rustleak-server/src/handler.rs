@@ -11,7 +11,7 @@ use hickory_resolver::{
     config::{ResolverConfig, ResolverOpts},
     AsyncResolver,
 };
-use hickory_proto::rr::{rdata::TXT, LowerName, Name, RData, Record};
+use hickory_proto::rr::{rdata::TXT, LowerName, Name, RData, Record, RecordType};
 use crate::options::Options;
 
 #[derive(thiserror::Error, Debug)]
@@ -127,51 +127,70 @@ impl Handler {
         request: &Request,
         mut responder: R,
     ) -> Result<ResponseInfo, Error> {
-        info!("Handling upload request: {}", request.query().name());
+        info!("Handling request: {}", request.query().name());
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
         header.set_authoritative(true);
-
+    
         let query_name = request.query().name().to_string();
         let parts: Vec<&str> = query_name.split('.').collect();
         let mut message = String::from("OK");
-
-        if parts.len() < 5 {
-            error!("Invalid upload request format: {}", request.query().name());
-            message = "ERROR: Invalid request format".to_string();
-        } else {
-            let uid = parts[4].to_string();
-            let maxseq: usize = parts[3].parse().unwrap_or(0);
-            let seq: usize = parts[2].parse().unwrap_or(0);
-            let data_fragment = parts[1].to_string();
-
-            match self.data.lock() {
-                Ok(mut data) => {
-                    let fragments = data.entry(uid.clone()).or_insert_with(|| vec![String::new(); maxseq]);
-                    if seq >= maxseq {
-                        message = "ERROR: Invalid sequence".to_string();
-                        error!("Failed to upload fragment: UID={} Seq={}", uid, seq);
-                    } else if !fragments[seq].is_empty() {
-                        message = "ERROR: Duplicate sequence".to_string();
-                        info!("Duplicate fragment: UID={} Seq={}", uid, seq);
-                    } else {
-                        fragments[seq] = data_fragment;
-                        info!("Uploaded fragment: UID={} Seq={}/{}", uid, seq + 1, maxseq);
+    
+        // Traiter les requêtes basées sur le type
+        match request.query().query_type() {
+            RecordType::A | RecordType::AAAA | RecordType::CNAME | RecordType::TXT => {
+                if parts.len() < 5 {
+                    error!("Invalid request format: {}", request.query().name());
+                    message = "ERROR: Invalid request format".to_string();
+                } else {
+                    let uid = parts[4].to_string();
+                    let maxseq: usize = parts[3].parse().unwrap_or(0);
+                    let seq: usize = parts[2].parse().unwrap_or(0);
+                    let data_fragment = parts[1].to_string();
+    
+                    match self.data.lock() {
+                        Ok(mut data) => {
+                            let fragments = data.entry(uid.clone()).or_insert_with(|| vec![String::new(); maxseq]);
+                            if seq >= maxseq {
+                                message = "ERROR: Invalid sequence".to_string();
+                                error!("Failed to upload fragment: UID={} Seq={}", uid, seq);
+                            } else if !fragments[seq].is_empty() {
+                                message = "ERROR: Duplicate sequence".to_string();
+                                info!("Duplicate fragment: UID={} Seq={}", uid, seq);
+                            } else {
+                                fragments[seq] = data_fragment;
+                                info!("Uploaded fragment: UID={} Seq={}/{}", uid, seq + 1, maxseq);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to acquire lock on data: {}", e);
+                            message = "ERROR: Failed to acquire lock".to_string();
+                        }
                     }
                 }
-                Err(e) => {
-                    error!("Failed to acquire lock on data: {}", e);
-                    message = "ERROR: Failed to acquire lock".to_string();
-                }
+            }
+            _ => {
+                // Si le type de requête n'est pas supporté, on renvoie une erreur générique.
+                message = "ERROR: Unsupported query type".to_string();
+                error!("Unsupported query type: {:?}", request.query().query_type());
             }
         }
-
-        let rdata = RData::TXT(TXT::new(vec![message]));
+    
+        // Construire une réponse générique pour tout type de requête
+        let rdata = match request.query().query_type() {
+            RecordType::A => RData::A("127.0.0.1".parse().unwrap()),
+            RecordType::AAAA => RData::AAAA("::1".parse().unwrap()),
+            RecordType::CNAME => RData::CNAME(hickory_proto::rr::rdata::CNAME(Name::from(self.root_zone.clone()))),
+            RecordType::TXT => RData::TXT(TXT::new(vec![message.clone()])),
+            _ => RData::TXT(TXT::new(vec![message.clone()])), // Fallback sur TXT
+        };
+    
         let records = vec![Record::from_rdata(request.query().name().into(), 60, rdata)];
-
+    
         let response = builder.build(header, records.iter(), &[], &[], &[]);
         Ok(responder.send_response(response).await?)
     }
+    
 
     async fn do_handle_request_download<R: ResponseHandler>(
         &self,
