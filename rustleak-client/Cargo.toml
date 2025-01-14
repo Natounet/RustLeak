@@ -11,7 +11,8 @@ hickory-resolver = "0.24.1"
 rustleak-lib = { path = "../rustleak-lib" }
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-macros = "2.4.0"
-
+rand = "0.8.5"
+futures = "0.3.25"
 [build]
 target = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
 
