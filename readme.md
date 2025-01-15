@@ -30,7 +30,8 @@
 ## **Possible Upgrades**
 - [x] **Record Type Rotation**: Upload request types vary between TXT, A, AAAA, and CNAME.
 - [x] **Multi-threading**: Allow the use of multi-threading to increase speed (at the cost of stealth).
-- [x] **Speed parameter**: Allow more control over the delay between request ( like nmap) 
+- [x] **Speed parameter**: Allow more control over the delay between request ( like nmap)
+- [ ] **Bypassing the local resolver** : Allow the client to take in arguments the IP of the dns server directly, bypassing the local resolver.
 - [ ] **Symmetric Encryption**: Encrypt data by providing a code for encryption when starting the program.
 - [ ] **Asymmetric Encryption**: Encrypt data automatically without requiring a code for encryption.
 - [ ] **Upload Speed Upgrade**: Transfer more labels in upload queries.
