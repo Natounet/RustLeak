@@ -144,17 +144,16 @@ The server handles DNS queries for a specific domain.
 #### **Start the Server**
 Run the server and specify the DNS zone to manage:
 ```bash
-rustleak-server --domain <dns_zone> 
+rustleak-server --domain <dns_zone> --port <IP:PORT>
 ```
 
 **Options**:
 - `--domain`: The DNS zone to manage (e.g., \`example.com\`).
-- `--port`: The port for the DNS server (default: 53).
-- `--output`: File to save data received from clients.
+- `--port`: The ip and port for the DNS server (default: 1053).
 
 **Example**:
 ```bash
-rustleak-server --domain example.com 
+rustleak-server --domain example.com --port IP:53
 ```
 
 ---
